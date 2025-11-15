@@ -14,13 +14,10 @@ annotated, it will no longer be offered for annotation.
 Application Structure
 ---------------------
 
-* Flask: The web interface and routing are handled by Flask.
+* Flask: Handles web routing and session management.
 * SQLAlchemy: All database interactions are managed via SQLAlchemy (an
-    Object-Relational Mapper). The database schema is defined in the
-    ``Ambiguous`` class, which maps to the ``ambiguous`` table.
-* PostgreSQL: The app is designed to connect to a PostgreSQL database.
-    It reads the connection string from a ``DATABASE_URL`` environment
-    variable, making it easy to use different local or remote databases.
+  * SQLAlchemy: Manages all database interactions via the `Ambiguous` model.
+* PostgreSQL: The backend database.
 
 Usage (Local Testing)
 ---------------------
@@ -67,12 +64,16 @@ server running.
     ```
 
 By default, it binds to ``localhost:8000``. Open your browser and
-navigate to ``http://localhost:8000/annotate`` to begin.
+navigate to ``http://localhost:8000/`` to begin.
 """
 
 import json
 import os
+from datetime import timedelta, datetime, timezone
+from functools import wraps
+from http import HTTPStatus
 from flask import (
+    session,
     Flask,
     redirect,
     render_template_string,
@@ -80,7 +81,9 @@ from flask import (
     url_for,
 )
 from flask_sqlalchemy import SQLAlchemy
-from http import HTTPStatus
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- Configuration ---
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -96,6 +99,12 @@ JSON_PATH = os.path.join(os.path.dirname(__file__), "ambigous.json")
 
 # Initialize the Flask app
 app = Flask(__name__)
+
+# Session configurations
+app.config["SECRET_KEY"] = os.environ.get(
+    "SECRET_KEY", "a-very-strong-random-key-for-local-testing"
+)
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 
 # Configure SQLAlchemy
 app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
@@ -116,6 +125,13 @@ class Ambiguous(db.Model):
     final_word = db.Column(db.Text)
     annotated = db.Column(db.Integer, default=0)
 
+    # For tracking the final annotation
+    annotated_by_email = db.Column(db.String(120), index=True, nullable=True)
+
+    # For concurrency locking
+    locked_by_email = db.Column(db.String(120), index=True, nullable=True)
+    locked_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
     def to_dict(self):
         """Helper to convert the object to a dict, parsing JSON fields."""
         return {
@@ -129,6 +145,9 @@ class Ambiguous(db.Model):
             "no": self.no,
             "final_word": self.final_word,
             "annotated": self.annotated,
+            "annotated_by_email": self.annotated_by_email,
+            "locked_by_email": self.locked_by_email,
+            "locked_at": self.locked_at,
         }
 
 
@@ -174,35 +193,88 @@ def init_db():
 # Create a Flask CLI command to run init_db
 @app.cli.command("init-db")
 def init_db_command():
-    """Clears the existing data and creates new tables."""
+    """Creates database tables and loads initial data."""
     with app.app_context():
         init_db()
     print("Initialized the database.")
 
 
-def get_next_item():
+## --- Authentication & Helpers ---
+# Wrapper to check for email
+def email_required(f):
     """
-    Fetch the next unannotated record from the database.
+    A decorator to ensure a user has an email in their session.
+    Redirects to the index page if not.
     """
-    row = Ambiguous.query.filter_by(annotated=0).order_by(Ambiguous.id).first()
 
-    if row is None:
-        return None
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if "email" not in session:
+            return redirect(url_for("index"))
+        return f(*args, **kwargs)
 
-    return row.to_dict()  # Use helper to convert to dict
+    return decorated_function
 
 
-def update_item(item_id: int, final_word: str, princeton_id: str = ""):
+## --- Core Application Logic ---
+def get_next_item(user_email):
+    """
+    Finds and locks the next available item for a user.
+    This must be atomic to prevent race conditions.
+    """
+
+    # 1. Handle Stale Locks
+    # Unlock any times that were locked > 30 mins ago
+    stale_time = datetime.now(timezone.utc) - timedelta(minutes=30)
+    Ambiguous.query.filter(Ambiguous.locked_at < stale_time).update(
+        {"locked_by_email": None, "locked_at": None}
+    )
+    db.session.commit()
+
+    # 2. Find and Lock the next time
+    item = (
+        Ambiguous.query.filter_by(annotated=0, locked_by_email=None)
+        .order_by(Ambiguous.id)
+        .first()
+    )
+
+    if item:
+        try:
+            item.locked_by_email = user_email
+            item.locked_at = datetime.now(timezone.utc)
+            db.session.commit()
+            return item.to_dict()  # Return the locked item
+        except:
+            db.session.rollback()
+            return None
+
+    return None  # No available items
+
+
+def update_item(item_id: int, final_word: str, email: str, princeton_id: str = ""):
     """
     Update a record with the annotator's final English word.
     """
     # 1. Find the item
     item_to_update = Ambiguous.query.get(item_id)
 
+    # SECURITY CHECK: Is this item locked by the person submitting it?
+    if item_to_update.locked_by_email != email:
+        return (
+            "Error: This item is not locked by you or the lock expired.",
+            HTTPStatus.FORBIDDEN,
+        )
+
     if item_to_update:
         # 2. Update its Python attributes
         item_to_update.final_word = final_word.strip()
         item_to_update.annotated = 1
+        item_to_update.annotated_by_email = email
+
+        # --- UNLOCK THE ITEM ---
+        item_to_update.locked_by_email = None
+        item_to_update.locked_at = None
+
         if princeton_id.strip():  # Only update if a new ID was provided
             item_to_update.princetonID = princeton_id.strip()
 
@@ -240,14 +312,66 @@ HTML_TEMPLATE = """<!doctype html>
 """
 
 
-@app.route("/")
+@app.route("/", methods=["GET", "POST"])
+def index():
+    if request.method == "POST":
+        email = request.form.get("email")
+        # Basic email validation (you can make this stricter)
+        if email and "@" in email:
+            session["email"] = email
+            # This makes it last for the 30 days we configured
+            session.permanent = True
+            return redirect(url_for("annotate_page"))
+
+    # If user is already "logged in", send them to annotate
+    if "email" in session:
+        return redirect(url_for("annotate_page"))
+
+    # Show a simple form if no email in session
+    body = """
+    <h1>Welcome</h1>
+    <p>Please enter your email to start annotating.</p>
+    <form method="post" action="/">
+        <label for="email">Email:</label>
+        <input type="email" id="email" name="email" required>
+        <input type="submit" value="Start">
+    </form>
+    """
+    return render_template_string(HTML_TEMPLATE, title="Welcome", body=body)
+
+
+@app.route("/logout")
+def logout():
+    """Clears the email from the session."""
+    session.pop("email", None)
+    return redirect(url_for("index"))
+
+
 @app.route("/annotate")
+@email_required
 def annotate_page():
-    item = get_next_item()
+    # Get email from session
+    email = session["email"]
+
+    # Check for an existing locked word
+    existing_lock = (
+        Ambiguous.query.filter_by(locked_by_email=email, annotated=0)
+        .order_by(Ambiguous.id)
+        .first()
+    )
+
+    if existing_lock:
+        item = existing_lock.to_dict()
+    else:
+        item = get_next_item(email)
 
     if item is None:
-        body = """<h1>All items have been annotated!</h1>
-        <p>Thank you for your contributions.</p>"""
+        # This now means there was no existing lock AND no new items were found.
+        body = f"""
+            <h1>All items are annotated or in progress!</h1>
+            <p>Thank you for your contributions.</p>
+            <p>You are annotating as: <strong>{email}</strong> (<a href="{url_for('logout')}">Logout</a>)</p>
+            """
         return render_template_string(HTML_TEMPLATE, title="Done", body=body)
 
     gloss_lines = "".join(f"<div class='gloss'>{g}</div>" for g in item["gloss"])
@@ -257,6 +381,9 @@ def annotate_page():
         suggestion_lines = f"<div class='suggestions'>Suggestions: {suggestions}</div>"
 
     body = f"""
+        <p style="text-align:right;">
+            Annotating as: <strong>{email}</strong> (<a href="{url_for('logout')}">Logout</a>)
+        </p>
         <h1>Annotate word</h1>
         <p><strong>Sinhala word:</strong> {item['word']}<br>
             <strong>Sense ID:</strong> {item['sense_id']}<br>
@@ -278,7 +405,11 @@ def annotate_page():
 
 
 @app.route("/submit", methods=["POST"])
+@email_required
 def submit_page():
+    # Get email from the session
+    email = session["email"]
+
     try:
         item_id = int(request.form.get("id", "0"))
     except ValueError:
@@ -290,7 +421,7 @@ def submit_page():
     if not final_word:
         return "Final word required", HTTPStatus.BAD_REQUEST
 
-    update_item(item_id, final_word, princeton_id)
+    update_item(item_id, final_word, email, princeton_id)
 
     return redirect(url_for("annotate_page"))
 
@@ -298,9 +429,6 @@ def submit_page():
 # This block is for local testing ONLY
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    print(f"Annotation server running locally on http://localhost:{port}/annotate")
+    print(f"Annotation server running locally on http://localhost:{port}/")
     print("NOTE: Run 'flask init-db' in your terminal first to set up the DB.")
-    # We must run init_db inside an app_context
-    with app.app_context():
-        init_db()
     app.run(host="0.0.0.0", port=port, debug=True)
