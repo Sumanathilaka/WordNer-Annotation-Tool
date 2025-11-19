@@ -292,15 +292,31 @@ HTML_TEMPLATE = """<!doctype html>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ title }}</title>
     <style>
-        body { font-family: sans-serif; margin: 2em; background-color: #f5f5f5; }
-        .container { max-width: 800px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-        h1 { font-size: 1.5em; margin-bottom: 0.5em; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 2em; background-color: #f5f5f5; color: #333; line-height: 1.6; }
+        .container { max-width: 800px; margin: auto; background: white; padding: 40px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        h1 { color: #2c3e50; text-align: center; margin-bottom: 0.5em; }
+        h2 { color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px; margin-top: 30px; }
+        h3 { color: #34495e; margin-top: 20px; }
+        
+        /* Login Box Styles */
+        .login-box { background-color: #e8f4f8; padding: 25px; border-radius: 8px; border: 1px solid #bce0fd; margin-bottom: 40px; }
+        .login-box h2 { margin-top: 0; border-bottom: none; color: #0277bd; }
         label { display: block; margin-top: 1em; font-weight: bold; }
-        input[type="text"] { width: 100%; padding: 8px; margin-top: 0.5em; }
-        input[type="submit"] { margin-top: 1em; padding: 10px 20px; font-size: 1em; }
-        ul { padding-left: 1.2em; }
-        .gloss { background-color: #eef; padding: 0.5em; border-radius: 4px; margin: 0.2em 0; }
-        .suggestions { background-color: #fee; padding: 0.5em; border-radius: 4px; margin: 0.2em 0; }
+        input[type="text"], input[type="email"] { width: 100%; padding: 10px; margin-top: 0.5em; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        input[type="submit"] { margin-top: 1.5em; padding: 12px 25px; font-size: 1.1em; background-color: #0277bd; color: white; border: none; border-radius: 4px; cursor: pointer; width: 100%; }
+        input[type="submit"]:hover { background-color: #01579b; }
+
+        /* Annotation Interface Styles */
+        ul, ol { padding-left: 1.5em; }
+        li { margin-bottom: 0.5em; }
+        .gloss { background-color: #eef; padding: 15px; border-radius: 4px; margin: 10px 0; border-left: 4px solid #0277bd; }
+        .suggestions { background-color: #fff3cd; padding: 15px; border-radius: 4px; margin: 10px 0; border-left: 4px solid #ffc107; }
+        
+        /* Contact Info */
+        .contact-list { list-style: none; padding: 0; }
+        .contact-list li { margin-bottom: 0.2em; }
+        a { color: #0277bd; text-decoration: none; }
+        a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -327,17 +343,59 @@ def index():
     if "email" in session:
         return redirect(url_for("annotate_page"))
 
-    # Show a simple form if no email in session
+    # Show login form with instructions
     body = """
-    <h1>Welcome</h1>
-    <p>Please enter your email to start annotating.</p>
-    <form method="post" action="/">
-        <label for="email">Email:</label>
-        <input type="email" id="email" name="email" required>
-        <input type="submit" value="Start">
-    </form>
+    <h1>Sinhala WordNet Annotation Tool</h1>
+    <p style="text-align: center; font-size: 1.1em; color: #666; margin-bottom: 30px;">
+        Welcome to the platform dedicated to building the most comprehensive Sinhala WordNet.
+    </p>
+
+    <div class="login-box">
+        <h2>Log In to Start</h2>
+        <p>Please log in using your email address to begin annotating.</p>
+        <form method="post" action="/">
+            <label for="email">Email Address:</label>
+            <input type="email" id="email" name="email" required placeholder="Enter your email address...">
+            <input type="submit" value="Start Annotating">
+        </form>
+    </div>
+
+    <h2>Introduction</h2>
+    <p>A <strong>WordNet</strong> is a large lexical database where words are grouped into sets of synonyms (called <em>synsets</em>) that represent distinct meanings. WordNets help computers understand human language more accurately and are essential for many applications in Natural Language Processing (NLP), such as machine translation, search engines, and language learning tools.</p>
+    <p>Your contribution will directly support the development of high-quality Sinhala language resources for researchers and the community.</p>
+
+    <h2>How to Use the Annotation Tool</h2>
+    <ol>
+        <li><strong>Log In:</strong> Use the form above to log in with your email.</li>
+        <li><strong>Read the Provided Sinhala Word:</strong> Each task will present you with a Sinhala word and its meaning in Sinhala.</li>
+        <li><strong>Select the Most Suitable English Word:</strong> 
+            <ul>
+                <li>Your job is to choose the <strong>correct English translation</strong> that fits the meaning given.</li>
+                <li>Some Sinhala words may have multiple possible senses, so make sure to pick the <strong>most accurate English word</strong> based on the context provided.</li>
+            </ul>
+        </li>
+        <li><strong>Use Suggestions (Optional):</strong> In some cases, the tool will show suggested English words. You may select one of the suggestions or type a more suitable English word if needed.</li>
+        <li><strong>Submit the Annotation:</strong> After selecting or entering the English word, submit your answer to move to the next word.</li>
+    </ol>
+
+    <h2>Rewards 🏆</h2>
+    <p>To appreciate your contribution:</p>
+    <ul>
+        <li>The <strong>top 3 users</strong> with the highest number of annotations will receive a <strong>cash prize</strong>.</li>
+        <li><em>Make sure to use a valid email address so we can contact you.</em></li>
+    </ul>
+
+    <h2>Need Help?</h2>
+    <p>If you have any questions or need clarification, feel free to contact:</p>
+    <ul class="contact-list">
+        <li><strong>Deshan Sumanathilaka</strong> – <a href="mailto:deshan.s@iit.ac.lk">deshan.s@iit.ac.lk</a></li>
+        <li><strong>Binuka Rajapaksha</strong> – <a href="mailto:binuka.20221332@iit.ac.lk">binuka.20221332@iit.ac.lk</a></li>
+        <li><strong>Siluni Keerthiratne</strong> – <a href="mailto:siluni.20220641@iit.ac.lk">siluni.20220641@iit.ac.lk</a></li>
+    </ul>
     """
-    return render_template_string(HTML_TEMPLATE, title="Welcome", body=body)
+    return render_template_string(
+        HTML_TEMPLATE, title="Welcome | Sinhala WordNet", body=body
+    )
 
 
 @app.route("/logout")
